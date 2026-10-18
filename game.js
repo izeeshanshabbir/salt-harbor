@@ -116,7 +116,7 @@ var CHAR_FILES=['Male_Casual','Male_Shirt','Male_LongSleeve','Male_Suit','Female
 var BLD_LOW=['a','b','c','d','h'],BLD_MID=['f','g','i','l','m'],BLD_SKY=['a','b','c','d','e'];
 var PROP_FILES=['light-square','construction-cone','construction-barrier','dumpster'];
 var A={cars:{},chars:{},city:{}};
-var loader=new T.GLTFLoader();
+var loader=new T.GLTFLoader(),useText=false;
 function loadAssets(onProgress){
   var jobs=[];
   CAR_FILES.forEach(function(n){jobs.push(['cars',n,'assets/cars/'+n+'.glb'])});
@@ -127,7 +127,15 @@ function loadAssets(onProgress){
   var done=0;
   return Promise.all(jobs.map(function(j){
     return new Promise(function(res){
-      loader.load(j[2],function(g){A[j[0]][j[1]]=g;done++;onProgress(done/jobs.length);res()},undefined,function(){done++;onProgress(done/jobs.length);res()});
+      var ok=function(g){A[j[0]][j[1]]=g;done++;onProgress(done/jobs.length);res()},bad=function(){done++;onProgress(done/jobs.length);res()};
+      /* some hosts do not serve .glb, so a base64 text copy (.b64.txt) is used as a fallback */
+      var viaText=function(){
+        fetch(j[2]+'.b64.txt').then(function(r){if(!r.ok)throw 0;return r.text()}).then(function(t){
+          var bin=atob(t.trim()),buf=new Uint8Array(bin.length);for(var q=0;q<bin.length;q++)buf[q]=bin.charCodeAt(q);
+          loader.parse(buf.buffer,'',function(g){useText=true;ok(g)},bad);
+        }).catch(bad);
+      };
+      if(useText)viaText();else loader.load(j[2],ok,undefined,viaText);
     });
   }));
 }
