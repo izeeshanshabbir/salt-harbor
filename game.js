@@ -45,12 +45,14 @@ renderer.shadowMap.type=T.PCFSoftShadowMap;
 var scene=new T.Scene();
 scene.fog=new T.Fog(col(0x8ec1e0),120,620);
 var camera=new T.PerspectiveCamera(62,1,0.5,1600);
-function resize(){var w=window.innerWidth,h=window.innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
+var FX={on:false,composer:null,bloom:null,fin:null};
+function resize(){var w=window.innerWidth,h=window.innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();if(FX.composer){FX.composer.setPixelRatio(renderer.getPixelRatio());FX.composer.setSize(w,h)}}
 window.addEventListener('resize',resize);
 function applyQuality(){
   renderer.setPixelRatio(CFG.q==='high'?Math.min(window.devicePixelRatio||1,2):1);
   sun.castShadow=CFG.q==='high';
   resize();
+  FX.on=CFG.q==='high'&&!!FX.composer;
 }
 var hemi=new T.HemisphereLight(col(0xbcd6ff),col(0x4a4338),0.9);scene.add(hemi);
 var sun=new T.DirectionalLight(col(0xffe2b0),1.6);
@@ -1529,6 +1531,36 @@ function populate(){
   for(i=0;i<nP;i++)spawnPed();
   cars.forEach(function(c){placeCar(c,0)});
 }
+
+/* post processing: glow on lights and a soft vignette. Only used on High, with a plain render as the fallback */
+var FIN_SHADER={
+  uniforms:{tDiffuse:{value:null},uVig:{value:0.32},uWet:{value:0}},
+  vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
+  fragmentShader:'uniform sampler2D tDiffuse;uniform float uVig;uniform float uWet;varying vec2 vUv;'+
+    'vec3 oetf(vec3 c){return mix(c*12.92,1.055*pow(c,vec3(0.41666))-0.055,step(vec3(0.0031308),c));}'+
+    'void main(){vec4 t=texture2D(tDiffuse,vUv);vec3 c=t.rgb;'+
+    'float d=distance(vUv,vec2(0.5));c*=1.0-smoothstep(0.35,0.95,d)*uVig;'+
+    'float l=dot(c,vec3(0.299,0.587,0.114));c=mix(vec3(l),c,1.0-0.25*uWet);'+
+    'gl_FragColor=vec4(oetf(clamp(c,0.0,1.0)),t.a);}'
+};
+function setupFX(){
+  if(!T.EffectComposer||!T.UnrealBloomPass||!T.ShaderPass||!T.RenderPass){return}
+  try{
+    var w=window.innerWidth,h=window.innerHeight,pr=renderer.getPixelRatio(),rt=null;
+    if(renderer.capabilities.isWebGL2&&T.WebGLMultisampleRenderTarget){rt=new T.WebGLMultisampleRenderTarget(w*pr,h*pr,{format:T.RGBAFormat,type:T.HalfFloatType});rt.samples=4}
+    var comp=new T.EffectComposer(renderer,rt||undefined);
+    comp.addPass(new T.RenderPass(scene,camera));
+    var bloom=new T.UnrealBloomPass(new T.Vector2(w,h),0.5,0.7,0.88);comp.addPass(bloom);
+    var fin=new T.ShaderPass(FIN_SHADER);comp.addPass(fin);
+    FX.composer=comp;FX.bloom=bloom;FX.fin=fin;resize();FX.on=CFG.q==='high';
+  }catch(e){FX.composer=null;FX.on=false;if(window.console)console.warn('post processing unavailable',e)}
+}
+function renderFrame(){
+  if(FX.on){
+    FX.bloom.strength=0.32+S.night*0.28+S.flash*0.6;FX.bloom.threshold=0.92;
+    FX.fin.uniforms.uWet.value=S.rain;FX.composer.render();
+  }else renderer.render(scene,camera);
+}
 var last=performance.now();
 function frame(now){
   requestAnimationFrame(frame);
@@ -1539,7 +1571,7 @@ function frame(now){
     var a=now/9000;camera.position.set(Math.sin(a)*260,90,Math.cos(a)*260);camera.lookAt(0,10,0);
     sky.position.copy(camera.position);
   }
-  renderer.render(scene,camera);
+  renderFrame();
 }
 function togglePause(){
   if(!S.started)return;
@@ -1585,7 +1617,7 @@ function setupMenu(){
 }
 function boot(){
   try{
-    collectCarLights();applyQuality();buildWorld();setPlayerChar(CFG.char);populate();setupMenu();
+    collectCarLights();setupFX();applyQuality();buildWorld();setPlayerChar(CFG.char);populate();setupMenu();
     updateSky();
     $('loading').hidden=true;$('menu').hidden=false;$('go').disabled=false;
   }catch(e){$('loadtxt').textContent='Something went wrong while building the city: '+e.message;if(window.console)console.error(e);return}
